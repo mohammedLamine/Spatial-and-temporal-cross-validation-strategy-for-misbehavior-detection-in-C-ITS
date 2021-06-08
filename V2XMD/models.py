@@ -39,7 +39,7 @@ train_columns = [
 ]
 
 class TrainModel:
-    def __init__(self,df,split='random',multi_class=False,features=False):
+    def __init__(self,df,split='random',multi_class=False,features=False,nb_leaks=100):
         """
         Contsructor for the model training class
         df is the dataframe containing the messages
@@ -49,6 +49,7 @@ class TrainModel:
         """
         self.df =df
         self.split=split
+        self.nb_leaks=nb_leaks
         self.multi_class=multi_class
         self.features=features
         self.names = ["Nearest Neighbors", 
@@ -81,10 +82,13 @@ class TrainModel:
         function used to split and train the model
         """
         if self.split.lower() == 'random':
+            print('random splitting')
             X_train, y_train,X_valid, y_valid,X_test, y_test=TrainModel.random_train_split(self.df)
-        else :
+        elif self.split.lower()== 'our' :
+            print('our')
             X_train, y_train,X_valid, y_valid,X_test, y_test=TrainModel.our_train_split(self.df)
-        
+        elif self.split.lower()== 'leakage' :
+            X_train, y_train,X_valid, y_valid,X_test, y_test=TrainModel.leakage_split(self.df,nb_leaks=self.nb_leaks)
         rsd_dict={}
         test_dict={}
         if not self.multi_class :
@@ -185,7 +189,7 @@ class TrainModel:
         random split using sklearn train_test split function
         """
         sub_train_columns= list(df.columns.intersection(train_columns))
-        train_data, test_data = df.sort_values('transmission_time')[:int(df.shape[0]*(test_frac))], df.sort_values('transmission_time')[int(df.shape[0]*(test_frac)):]
+        train_data, test_data = df.sort_values('reception_time')[:int(df.shape[0]*(test_frac))], df.sort_values('reception_time')[int(df.shape[0]*(test_frac)):]
         train_data, valid_data = sklearn.model_selection.train_test_split(train_data,test_size=1-valid_frac)
 
         X_train, y_train= train_data.drop(irrelevant_train_columns,axis=1).groupby('dataset')[sub_train_columns], train_data.groupby('dataset').label
@@ -199,18 +203,79 @@ class TrainModel:
         our proposed split with our  and spatial considerations
         """
         sub_train_columns= list(df.columns.intersection(train_columns))
-        train_data, test_data = df.sort_values('transmission_time')[:int(df.shape[0]*(test_frac))], df.sort_values('transmission_time')[int(df.shape[0]*(test_frac)):]
+        train_data, test_data = df.sort_values('reception_time')[:int(df.shape[0]*(test_frac))], df.sort_values('reception_time')[int(df.shape[0]*(test_frac)):]
         intersection_idxs=test_data.bsm_id.isin(np.intersect1d(train_data.bsm_id,test_data.bsm_id))
         train_data= pd.concat([train_data, test_data[intersection_idxs]])
         test_data = test_data[~intersection_idxs]
         
-        train_data, valid_data = train_data.sort_values('transmission_time')[:int(train_data.shape[0]*(valid_frac))], train_data.sort_values('transmission_time')[int(train_data.shape[0]*(valid_frac)):]
+        train_data, valid_data = train_data.sort_values('reception_time')[:int(train_data.shape[0]*(valid_frac))], train_data.sort_values('reception_time')[int(train_data.shape[0]*(valid_frac)):]
         
         intersection_idxs=valid_data.bsm_id.isin(np.intersect1d(train_data.bsm_id,valid_data.bsm_id))
         train_data = pd.concat([train_data, valid_data[intersection_idxs]])
-        train_data = train_data.sort_values('transmission_time')
+        train_data = train_data.sort_values('reception_time')
         valid_data = valid_data[~intersection_idxs]
         
+        X_train, y_train= train_data.drop(irrelevant_train_columns,axis=1).groupby('dataset')[sub_train_columns], train_data.groupby('dataset').label
+        X_test, y_test =test_data.drop(irrelevant_train_columns,axis=1).groupby('dataset')[sub_train_columns], test_data.groupby('dataset').label
+        X_valid, y_valid =valid_data.drop(irrelevant_train_columns,axis=1).groupby('dataset')[sub_train_columns], valid_data.groupby('dataset').label
+
+        return X_train, y_train,X_valid, y_valid,X_test, y_test
+    
+    
+    def leakage_split(df,valid_frac=0.8,test_frac=0.8,nb_leaks=100):
+        """
+        Intentional leakage split for investigaion of the impact of leakage on the performance
+        """
+        sub_train_columns= list(df.columns.intersection(train_columns))
+
+        train_data, test_data = df.sort_values('reception_time')[:int(df.shape[0]*(test_frac))], df.sort_values('reception_time')[int(df.shape[0]*(test_frac)):]
+
+        intersection_idxs=test_data.bsm_id.isin(np.intersect1d(train_data.bsm_id,test_data.bsm_id))
+
+        train_data= pd.concat([train_data, test_data[intersection_idxs]])
+
+        test_data = test_data[~intersection_idxs]
+
+        train_data, valid_data = train_data.sort_values('reception_time')[:int(train_data.shape[0]*(valid_frac))], train_data.sort_values('reception_time')[int(train_data.shape[0]*(valid_frac)):]
+        intersection_idxs=valid_data.bsm_id.isin(np.intersect1d(train_data.bsm_id,valid_data.bsm_id))
+        train_data = pd.concat([train_data, valid_data[intersection_idxs]])
+        train_data = train_data.sort_values('reception_time')
+        valid_data = valid_data[~intersection_idxs]
+        
+        # leakage application
+        leakable_train=train_data.bsm_id.value_counts()[train_data.bsm_id.value_counts()>=2].index
+        print("leakable train messages :", len(leakable_train))
+
+        if len(leakable_train)<nb_leaks: 
+            print("number of leaks excess the number of unique messages with 2 minimum copys. TLRD: can't leak that many",len(leakable_train),nb_leaks)
+        leaking_train_idx=leakable_train[np.random.choice(len(leakable_train),size=nb_leaks,replace=False)]
+        train_samples_to_leak = np.concatenate(train_data[train_data.bsm_id.isin(leaking_train_idx)]
+                                               .groupby('bsm_id')
+                                               .apply(lambda x, size : sklearn.model_selection.train_test_split(x.index,test_size=size)
+                                                      [0].values,size=0.5).values
+                                              )
+        leakable_valid=valid_data.bsm_id.value_counts()[valid_data.bsm_id.value_counts()>=2].index
+        print("leakable validaion messages :", len(leakable_valid))
+        if len(leakable_valid)<nb_leaks: 
+            print("number of leaks excess the number of unique messages with 2 minimum copys. TLRD: can't leak that many",len(leakable_valid),nb_leaks)
+
+        leaking_valid_idx=leakable_valid[np.random.choice(len(leakable_valid),size=nb_leaks,replace=False)]
+
+        valid_samples_to_leak = np.concatenate(valid_data[valid_data.bsm_id.isin(leaking_valid_idx)]
+                                           .groupby('bsm_id')
+                                           .apply(lambda x, size : sklearn.model_selection.train_test_split(x.index,test_size=size)
+                                                  [0].values,size=0.5).values
+                                          )
+
+        train_data = pd.concat([train_data, valid_data.loc[valid_samples_to_leak]])
+        valid_data = pd.concat([valid_data, train_data.loc[train_samples_to_leak]])
+
+        valid_data = valid_data[~valid_data.index.isin(valid_samples_to_leak)]
+        train_data = train_data[~train_data.index.isin(train_samples_to_leak)]
+
+        train_data = train_data.sort_values('reception_time')
+        valid_data = valid_data.sort_values('reception_time')
+
         X_train, y_train= train_data.drop(irrelevant_train_columns,axis=1).groupby('dataset')[sub_train_columns], train_data.groupby('dataset').label
         X_test, y_test =test_data.drop(irrelevant_train_columns,axis=1).groupby('dataset')[sub_train_columns], test_data.groupby('dataset').label
         X_valid, y_valid =valid_data.drop(irrelevant_train_columns,axis=1).groupby('dataset')[sub_train_columns], valid_data.groupby('dataset').label

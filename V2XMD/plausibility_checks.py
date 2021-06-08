@@ -5,6 +5,10 @@ from V2XMD  import data_processing
 
 class PlausibilityChecks:
     def __init__(self,df):
+        if (df.label.dtype ==np.int64):
+            self.df=df.assign(truth =df.label!=1)
+            return
+
         self.df=df.assign(truth =df.label!='Genuine')
 
     def art(self, threshold): # Acceptance Range Threshold (ART)
